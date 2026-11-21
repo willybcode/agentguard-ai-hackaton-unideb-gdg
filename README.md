@@ -72,7 +72,9 @@ AG_MODEL_TYPE=regular
 | `AG_ADJUDICATOR_TYPE` | `decision` | `decision` (native) or `regular` (JSON fallback) |
 | `AG_DECISION_THRESHOLD` | `0.5` | P(safe) below which the adjudicator denies |
 | `AG_DECISION_URL` | `<AG_API_URL>/decisions` | Override when the proxy does not route decisions |
-| `AG_MAX_TOKENS` | `8192` | Planning budget; a reasoning model spends most of it thinking |
+| `AG_MAX_TOKENS` | `8192` | Planning budget; a model that ignores the reasoning setting spends most of it thinking |
+| `AG_REASONING_EFFORT` | `none` | Sent as `reasoning_effort`. `none` removed reasoning entirely on the proxy (137 → 20 completion tokens, 5.1s → 3.1s); `off` omits the field for models that reject it |
+| `AG_DEMO_PORT` | `8000` | Default port for `python -m ag serve`; `--port` overrides |
 | `AG_FALLBACK_TO_MOCK` | `true` | Degrade to the mock on transport errors |
 | `AG_TIMEOUT` | `60` | Per-request seconds |
 
@@ -182,7 +184,7 @@ kept on the step as `model_tool`, so the audit shows what the model said next to
 what the policy matched. An alias not in the table still fails closed as
 `unknown-tool`.
 
-### Reasoning models need a budget
+### Reasoning models need a budget — or a setting that turns it off
 
 `opencode-go/deepseek-v4.1-flash` spends 2.5k–8k tokens thinking before emitting
 a single JSON character. With a 700-token budget every response came back
@@ -193,6 +195,20 @@ being reported as an unreachable planner:
 EmptyCompletion: no answer before the token budget ran out
 (7845 reasoning chars); raise AG_MAX_TOKENS
 ```
+
+`AG_REASONING_EFFORT` removes the problem instead of paying for it. Measured on
+the proxy, same prompt:
+
+| `reasoning_effort` | reasoning tokens | completion tokens | wall clock |
+|---|---|---|---|
+| *(not sent)* | 116 | 137 | 2.6 s |
+| `minimal` | 32 | 53 | 1.4 s |
+| `low` | 65 | 86 | 1.8 s |
+| **`none`** | **0** | **20** | **1.3 s** |
+
+End to end through the planner, `none` gave the same plan in 3.1 s where the
+default took 5.1 s. The field is only sent when configured, so models that
+reject it are unaffected — send `off` to omit it entirely.
 
 Testing without a real model:
 
@@ -213,6 +229,61 @@ The event rules ask for an honest list of the tools and services this uses.
 | **Libraries** | Python standard library only for the application. No web framework, no agent framework, no LLM SDK — JSON over `urllib`. |
 | **External data** | OWASP Top 10 for Agentic Applications 2026 (category names, CC BY-SA 4.0, attributed in `ag/owl.py`). |
 | **What is simulated** | Every tool execution. Nothing in this repo runs a real shell command, writes a real file or opens a real network connection during a demo. That is deliberate — the demo is safe to run in front of a jury. |
+
+## Where it plugs in
+
+AgentGuard is not a framework. It sits between a planner you already have and an
+executor you already have, which means it fits into whatever agent stack you
+are already running.
+
+### Frameworks with a tool-call boundary
+
+| Stack | Where the guard goes | Shape |
+|---|---|---|
+| **OpenAI / Anthropic / Gemini SDKs** | wrap the `tool_calls` loop: vet each call before you dispatch it | `for call in guard.vet_all(to_plan(response))` |
+| **LangChain / LangGraph** | a node between the model node and the tool node; or subclass `BaseTool` and call the guard in `_run` | one node, no graph rewrite |
+| **LlamaIndex** | wrap `FunctionTool` / `QueryEngineTool`; or a `BaseTool` shim | per-tool |
+| **CrewAI** | a task callback before the crew executes, or a `BaseTool` wrapper | per-crew |
+| **AutoGen / AG2** | a reply hook on the assistant agent before tool execution | per-agent |
+| **Vercel AI SDK** | `execute` wrapper on each `tool({...})` | per-tool, TS |
+| **MCP servers** | an MCP proxy that vets `tools/call` before forwarding | transport-level, language-agnostic |
+| **Plain `subprocess` / shell scripts** | `python -m ag check plan.json` before running anything | CI |
+
+The MCP case is the strongest fit: every MCP client already funnels tool calls
+through `tools/call`, so a proxy there guards *any* MCP server without touching
+it. That is the natural next step for this project.
+
+### Tools that already do something similar
+
+| Tool | What it does | Where it stops |
+|---|---|---|
+| **OpenAI Agents SDK guardrails** | input/output guardrails, tripwires, human approval | tripwires are LLM-judged; no per-argument tool policy, no taint tracking, no audit chain |
+| **NeMo Guardrails (NVIDIA)** | Colang rules over dialogue and tool use | rules constrain conversation flow; the tool boundary is not the unit |
+| **Guardrails AI** | validators on model output | validates what the model *says*, not what it *does* |
+| **LangChain human-in-the-loop** | `interrupt()` before a tool runs | approval only — no deny rules, no taint, no attributable rule name |
+| **Lakera / Prompt Guard class** | classify prompt injection | detects the attempt; does not stop the tool call |
+| **OPA / Cedar / Casbin** | general policy engines | no notion of taint, agent budgets or ASI categories |
+| **LiteLLM guardrails** | filters on the LLM call path | sits in front of the model, not in front of the tool |
+
+### What this does differently
+
+Four properties, each of which is a test in this repo rather than a claim:
+
+1. **The unit is the tool call, not the sentence.** Policy is evaluated against
+   `(tool, args)`, so `run_shell("pytest -q")` and `run_shell("rm -rf /")` are
+   distinguished. Output validators cannot see that distinction.
+2. **Taint tracking.** Once a run reads untrusted content, no later side effect
+   is allowed. This is what stops an injected instruction in a fetched changelog
+   or an email — the failure mode that output filtering misses entirely, because
+   the model's output looks perfectly reasonable.
+3. **Every stop has a name.** Decisions carry a rule (`tainted-context`,
+   `forbidden-token`, `budget-exhausted`) and an OWASP ASI category, so a block
+   is reviewable rather than "the AI said no".
+4. **The log is tamper-evident.** Entries are SHA-256 chained; editing or
+   deleting one is detectable. Approval-only tools leave no such record.
+
+The honest limitation: policy rules and taint sources are things *you* declare.
+It governs the tool boundary you wrap, not arbitrary code paths inside an agent.
 
 ## Three ways to use it
 

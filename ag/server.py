@@ -369,8 +369,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send({"error": "not found"}, status=404)
 
 
-def serve(host: str = "127.0.0.1", port: int = 8000) -> None:
+def serve(host: str = "127.0.0.1", port: int | None = None) -> None:
     load_dotenv()
+    if port is None:
+        port = config_from_env().demo_port
     httpd = ThreadingHTTPServer((host, port), Handler)
     print(f"AgentGuard UI  ->  http://{host}:{port}")
     print(f"planner        ->  {build_provider().name}")
@@ -386,4 +388,4 @@ def serve(host: str = "127.0.0.1", port: int = 8000) -> None:
 if __name__ == "__main__":
     import sys
 
-    serve(port=int(sys.argv[1]) if len(sys.argv) > 1 else 8000)
+    serve(port=int(sys.argv[1]) if len(sys.argv) > 1 else None)

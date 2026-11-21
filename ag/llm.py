@@ -205,6 +205,7 @@ class OpenAICompatProvider:
     name: str = "openai-compat"
     timeout: float = 60.0
     max_tokens: int = 2048
+    reasoning_effort: str = ""
     extra: dict[str, Any] = field(default_factory=dict)
 
     def complete(self, messages: list[dict[str, str]]) -> str:
@@ -214,7 +215,14 @@ class OpenAICompatProvider:
             "messages": messages,
             "temperature": 0.0,
             "max_tokens": self.max_tokens,
-        } | self.extra
+        }
+        # A reasoning model spends most of its budget thinking before it emits a
+        # single JSON character. Measured on the proxy: "none" drops reasoning
+        # tokens to zero and the completion from 137 to 20 tokens. Sent only
+        # when requested, so models that reject the field are unaffected.
+        if self.reasoning_effort and self.reasoning_effort != "off":
+            payload["reasoning_effort"] = self.reasoning_effort
+        payload |= self.extra
         request = urllib.request.Request(
             url,
             data=json.dumps(payload).encode(),
@@ -302,6 +310,7 @@ def build_provider(config: Config | None = None) -> Provider:
         name=f"api:{cfg.model}",
         timeout=cfg.timeout,
         max_tokens=cfg.max_tokens,
+        reasoning_effort=cfg.reasoning_effort,
     )
     if not cfg.fallback_to_mock:
         return primary

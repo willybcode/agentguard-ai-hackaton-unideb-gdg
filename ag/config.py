@@ -74,6 +74,8 @@ class Config:
     timeout: float = 60.0
     decision_threshold: float = 0.5
     max_tokens: int = 2048
+    reasoning_effort: str = "none"
+    demo_port: int = 8000
     explicit: bool = False
 
     @property
@@ -139,5 +141,7 @@ def config_from_env() -> Config:
         timeout=_float("AG_TIMEOUT", 60.0),
         decision_threshold=_float("AG_DECISION_THRESHOLD", 0.5),
         max_tokens=int(_float("AG_MAX_TOKENS", 2048)),
+        reasoning_effort=(os.environ.get("AG_REASONING_EFFORT") or "none").strip().lower(),
+        demo_port=int(_float("AG_DEMO_PORT", 8000)),
         explicit=bool(explicit_url),
     )

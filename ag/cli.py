@@ -119,6 +119,7 @@ def cmd_suite(args, out: Out) -> int:
 def cmd_serve(args, out: Out) -> int:
     from .server import serve
 
+    # --port wins; otherwise AG_DEMO_PORT; otherwise 8000.
     serve(port=args.port)
     return 0
 
@@ -205,7 +206,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_suite.set_defaults(func=cmd_suite)
 
     p_serve = sub.add_parser("serve", help="start the demo web UI")
-    p_serve.add_argument("--port", type=int, default=8000)
+    p_serve.add_argument(
+        "--port", type=int, default=None, help="default: AG_DEMO_PORT, else 8000"
+    )
     p_serve.set_defaults(func=cmd_serve)
 
     p_policy = sub.add_parser("policy", help="print the active policy")

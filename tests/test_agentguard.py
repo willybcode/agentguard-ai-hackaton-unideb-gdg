@@ -981,5 +981,110 @@ class SamplesTest(unittest.TestCase):
                 self.assertEqual(sample["task"], by_asi[sample["asi"]])
 
 
+class ReasoningParamTest(unittest.TestCase):
+    """The payload must carry reasoning_effort only when asked."""
+
+    def _payload(self, effort):
+        import json
+        from unittest import mock
+
+        from ag.llm import OpenAICompatProvider
+
+        captured = {}
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return json.dumps(
+                    {"choices": [{"message": {"content": "[]"}, "finish_reason": "stop"}]}
+                ).encode()
+
+        def fake_urlopen(request, timeout=None):
+            captured["body"] = json.loads(request.data.decode())
+            return FakeResponse()
+
+        provider = OpenAICompatProvider(
+            base_url="http://x/v1",
+            model="m",
+            reasoning_effort=effort,
+        )
+        with mock.patch("urllib.request.urlopen", fake_urlopen):
+            provider.complete([{"role": "user", "content": "hi"}])
+        return captured["body"]
+
+    def test_sent_when_configured(self) -> None:
+        self.assertEqual(self._payload("none")["reasoning_effort"], "none")
+
+    def test_not_sent_when_off(self) -> None:
+        self.assertNotIn("reasoning_effort", self._payload("off"))
+
+    def test_not_sent_when_empty(self) -> None:
+        self.assertNotIn("reasoning_effort", self._payload(""))
+
+    def test_max_tokens_is_sent(self) -> None:
+        self.assertIn("max_tokens", self._payload("none"))
+
+    def test_config_default_is_none(self) -> None:
+        import os
+
+        from ag.config import config_from_env
+
+        saved = os.environ.pop("AG_REASONING_EFFORT", None)
+        try:
+            self.assertEqual(config_from_env().reasoning_effort, "none")
+        finally:
+            if saved is not None:
+                os.environ["AG_REASONING_EFFORT"] = saved
+
+
+class DemoPortTest(unittest.TestCase):
+    def test_default_port(self) -> None:
+        import os
+
+        from ag.config import config_from_env
+
+        saved = os.environ.pop("AG_DEMO_PORT", None)
+        try:
+            self.assertEqual(config_from_env().demo_port, 8000)
+        finally:
+            if saved is not None:
+                os.environ["AG_DEMO_PORT"] = saved
+
+    def test_env_overrides(self) -> None:
+        import os
+
+        from ag.config import config_from_env
+
+        saved = os.environ.get("AG_DEMO_PORT")
+        os.environ["AG_DEMO_PORT"] = "8123"
+        try:
+            self.assertEqual(config_from_env().demo_port, 8123)
+        finally:
+            if saved is None:
+                os.environ.pop("AG_DEMO_PORT", None)
+            else:
+                os.environ["AG_DEMO_PORT"] = saved
+
+    def test_bad_value_falls_back(self) -> None:
+        import os
+
+        from ag.config import config_from_env
+
+        saved = os.environ.get("AG_DEMO_PORT")
+        os.environ["AG_DEMO_PORT"] = "not-a-port"
+        try:
+            self.assertEqual(config_from_env().demo_port, 8000)
+        finally:
+            if saved is None:
+                os.environ.pop("AG_DEMO_PORT", None)
+            else:
+                os.environ["AG_DEMO_PORT"] = saved
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
