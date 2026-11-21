@@ -67,7 +67,7 @@
     padding: 12px 14px;
   }
   .score .k { font-size: 9.5px; letter-spacing: 1.1px; text-transform: uppercase; color: #8B9BB0; font-weight: 700; }
-  .score .v { font-size: 27px; font-weight: 700; margin-top: 3px; font-variant-numeric: tabular-nums; }
+  .score .v { font-size: 25px; font-weight: 700; margin-top: 3px; font-variant-numeric: tabular-nums; }
 
   .table { width: 100%; border-collapse: collapse; margin-top: 10px; }
   .table td { padding: 6px 0; font-size: 16px; border-bottom: 1px solid #1b2431; }
@@ -115,7 +115,8 @@
   <div class="cols" style="margin-top:44px">
     <div class="col">
       <div class="label">The user</div>
-      <p>A team wiring an LLM agent into CI/CD. The agent can read files, run shell commands and push to <span class="code">main</span>.</p>
+      <p>A student or small team shipping a first agent: an assistant that reads issues, runs tests and pushes to <span class="code">main</span>.</p>
+      <p style="margin-top:12px">It has no security team, no review gate, and no log anyone can check.</p>
       <p style="margin-top:12px"><strong>Nobody can say what it did, or why.</strong></p>
     </div>
     <div class="col">
@@ -182,7 +183,7 @@
     <div class="col" style="flex:0 0 40%">
       <p style="font-size:16.5px">Same planner, same tools, same task. Ten attacks, one per category of the <em>OWASP Top 10 for Agentic Applications 2026</em>.</p>
 
-      <div class="score" style="flex-direction:column; gap:8px">
+      <div class="score" style="flex-direction:column; gap:6px; margin:12px 0 4px">
         <div style="display:flex;justify-content:space-between;align-items:center">
           <span class="k">Baseline landed</span><span class="v red">10 / 10</span>
         </div>
@@ -192,10 +193,16 @@
       </div>
 
       <p class="muted" style="font-size:13.5px;margin-top:8px">77 unit tests. The scoreboard is a test result, not a slide.</p>
+      <p class="muted" style="font-size:12.5px;margin-top:9px;line-height:1.4">
+        <span class="blue">Live run:</span> planner <span class="code" style="font-size:11.5px">deepseek-v4.1-flash</span>,
+        adjudicator <span class="code" style="font-size:11.5px">d1-2B</span>.
+        Rule matching reads <em>info</em> here because a real model often stops an attack
+        by a different rule than the scripted one — the invariant is that nothing lands.
+      </p>
     </div>
 
     <div class="col">
-      <img class="shot" src="deck-1-overview.png" alt="AgentGuard scoreboard">
+      <img class="shot" src="deck-live-overview.png" alt="AgentGuard scoreboard, live run">
     </div>
   </div>
 
@@ -219,7 +226,7 @@
   </div>
 
   <div class="footer">
-    <span class="muted">Every tool call is simulated — nothing touches a real shell, file or network during a demo.</span>
+    <span class="muted">Deterministic run with the built-in mock planner, so the injected path always reproduces on stage. Every tool call is simulated.</span>
     <span>4 / 5</span>
   </div>
 </section>
@@ -232,9 +239,9 @@
     <div class="col">
       <div class="label">Who benefits</div>
       <ul>
-        <li>Any team shipping an agent with tool access</li>
-        <li>Security reviewers who need an auditable answer to <em>“what did it do?”</em></li>
-        <li>Students wiring a first agent, who get a policy to copy instead of a prompt to trust</li>
+        <li>Small teams and students shipping a first agent with tool access — no security team to catch an injected instruction</li>
+        <li>Security reviewers who need an auditable answer to <em>“what did it do, and why?”</em></li>
+        <li>Course and hackathon projects that need a worked example of guardrails, not another chatbot</li>
       </ul>
 
       <div class="label" style="margin-top:22px">Why it lasts past today</div>
