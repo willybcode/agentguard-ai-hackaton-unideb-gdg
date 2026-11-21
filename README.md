@@ -1,5 +1,12 @@
 # AgentGuard
 
+**Track 1 — Autonomous Agents & Intelligent Systems**
+
+*One sentence: AgentGuard is a policy gate that sits between what an LLM agent
+plans and what it actually does, so a poisoned document, a bad tool call or a
+runaway loop cannot reach your filesystem, your shell or your credentials — and
+every decision is recorded in an audit log you can verify.*
+
 A policy-enforced runtime for LLM tool-calling agents, demonstrated against the
 **OWASP Top 10 for Agentic Applications 2026** (`ASI01`–`ASI10`).
 
@@ -7,6 +14,14 @@ The claim is narrow and testable: take the *same* planner, the *same* tool
 executor and the *same* task, and put a policy check between the plan and the
 effect. Ten scripted attacks — one per OWASP ASI category — all land on the
 unguarded agent and none land on the guarded one.
+
+> **Development disclosure.** The core runtime was scaffolded before hacking
+> began at 11:00 and is visible in the git history (`f41a8d0`, 09:50). During
+> the event the planner and decision-model integrations were validated against
+> live models, two real defects were found and fixed (see *Verified against a
+> real d1-2B*), the tool-alias and token-budget handling were added, and the
+> adjudication policy was measured and rewritten. Nothing here is claimed as
+> six hours of from-scratch work.
 
 ```
 attacks run              10
@@ -194,6 +209,20 @@ python3 tests/stub_proxy.py 4100
 AG_API_URL=http://127.0.0.1:4100/v1 AG_MODEL=chat \
 AG_ADJUDICATOR_MODEL=d1-2b python3 -m ag.demo
 ```
+
+## Tools and prior work
+
+The event rules ask for an honest list of what was used and what was built when.
+
+| | |
+|---|---|
+| **Before the event** | The runtime skeleton, policy engine, audit chain, simulated sandbox, attack suite and web UI were scaffolded in advance and are visible in the first commit. |
+| **During the event** | Live-model validation of the planner and the decision model, the `intent`-led adjudication policy (measured, then rewritten), tool-alias normalisation, the reasoning-model token budget fix, and the README/deck. |
+| **AI assistants used** | GitHub Copilot (VS Code) for implementation and review; the code was reviewed and run locally at every step. |
+| **Models used** | `opencode-go/deepseek-v4.1-flash` as the planner, `lmstudio/d1-2b` (Liquid LFM3 decision model) as the adjudicator, both behind a local OpenAI-compatible proxy. A deterministic mock planner is built in and used for reproducible tests. |
+| **Libraries** | Python standard library only for the application. No web framework, no agent framework, no LLM SDK — JSON over `urllib`. |
+| **External data** | OWASP Top 10 for Agentic Applications 2026 (category names, CC BY-SA 4.0, attributed in `ag/owl.py`). |
+| **What is simulated** | Every tool execution. Nothing in this repo runs a real shell command, writes a real file or opens a real network connection during a demo. That is deliberate — the demo is safe to run in front of a jury. |
 
 ## Quick start
 
