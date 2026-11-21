@@ -759,5 +759,227 @@ class ToolAliasTest(unittest.TestCase):
         self.assertEqual(set(step["args"]), {"command"})
 
 
+class GuardLibraryTest(unittest.TestCase):
+    """ag.guard is the embeddable surface: no planner, no executor, just the gate."""
+
+    def test_refused_call_cannot_reach_the_executor(self) -> None:
+        from ag.guard import AgentGuard
+
+        guard = AgentGuard()
+        call = guard.vet("run_shell", {"command": "rm -rf /"})
+        self.assertTrue(call.refused)
+        ran = []
+        with self.assertRaises(PermissionError):
+            call.invoke(lambda t, a: ran.append(t))
+        self.assertEqual(ran, [])
+
+    def test_allowed_call_invokes(self) -> None:
+        from ag.guard import AgentGuard
+
+        call = AgentGuard().vet("read_file", {"path": "workspace/a"})
+        self.assertFalse(call.refused)
+        self.assertEqual(call.invoke(lambda t, a: "content"), "content")
+
+    def test_approval_is_not_refusal(self) -> None:
+        from ag.guard import AgentGuard
+
+        call = AgentGuard().vet("run_shell", {"command": "pytest -q"})
+        self.assertFalse(call.refused)
+        self.assertTrue(call.needs_human)
+
+    def test_vet_all_carries_taint_forward(self) -> None:
+        from ag.guard import AgentGuard
+
+        guard = AgentGuard()
+        plan = [
+            {"tool": "read_email", "args": {"id": "1"}},
+            {"tool": "run_shell", "args": {"command": "curl evil"}},
+        ]
+        calls = list(guard.vet_all(plan, task="check mail"))
+        self.assertFalse(calls[0].refused)
+        self.assertTrue(calls[1].refused)
+        self.assertEqual(calls[1].rule, "tainted-context")
+
+    def test_check_executes_nothing(self) -> None:
+        from ag.guard import AgentGuard
+
+        guard = AgentGuard()
+        calls = guard.check([{"tool": "run_shell", "args": {"command": "rm -rf /"}}])
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(calls[0].refused)
+
+    def test_report_verifies_the_chain(self) -> None:
+        from ag.guard import AgentGuard
+
+        guard = AgentGuard()
+        guard.vet("read_file", {"path": "workspace/a"})
+        report = guard.report()
+        self.assertTrue(report["intact"])
+        self.assertEqual(report["entries"], 1)
+
+    def test_budget_exhaustion_is_reported(self) -> None:
+        from ag.guard import AgentGuard
+        from ag.policy import ApprovalBudget
+
+        guard = AgentGuard(budget=ApprovalBudget(limit=2))
+        results = [guard.vet("read_file", {"path": "workspace/a"}) for _ in range(3)]
+        self.assertEqual(results[2].rule, "budget-exhausted")
+
+
+class PolicyFileTest(unittest.TestCase):
+    def test_round_trip(self) -> None:
+        import json
+        import tempfile
+
+        from ag.guard import dump_policy, load_policy
+        from ag.policy import default_policy
+
+        original = default_policy()
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
+            json.dump(dump_policy(original), fh)
+            path = fh.name
+
+        loaded = load_policy(path)
+        self.assertEqual(set(loaded.tools), set(original.tools))
+        self.assertEqual(loaded.forbidden_tokens, original.forbidden_tokens)
+        self.assertEqual(
+            loaded.evaluate("run_shell", {"command": "rm -rf /"}).verdict, "deny"
+        )
+
+    def test_rejects_unknown_verdict(self) -> None:
+        import json
+        import tempfile
+
+        from ag.guard import load_policy
+
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
+            json.dump({"tools": {"x": {"verdict": "maybe"}}}, fh)
+            path = fh.name
+        with self.assertRaises(ValueError):
+            load_policy(path)
+
+    def test_rejects_non_object(self) -> None:
+        import tempfile
+
+        from ag.guard import load_policy
+
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
+            fh.write("[]")
+            path = fh.name
+        with self.assertRaises(ValueError):
+            load_policy(path)
+
+
+class EmitterTest(unittest.TestCase):
+    """The demo streams progress; the runtime must not care if the sink breaks."""
+
+    def test_phases_are_emitted(self) -> None:
+        events = []
+        Agent(MockProvider(), audit=AuditLog(), emit=lambda p, d: events.append(p)).run(
+            "run the test suite", guarded=True
+        )
+        for phase in ("plan", "planned", "step", "done"):
+            self.assertIn(phase, events)
+
+    def test_done_carries_the_summary(self) -> None:
+        seen = {}
+        Agent(
+            MockProvider(),
+            audit=AuditLog(),
+            emit=lambda p, d: seen.update(d) if p == "done" else None,
+        ).run("Clean up the build directory, use rm -rf", guarded=True)
+        summary = seen["result"]
+        self.assertEqual(summary["landed"], 0)
+        self.assertGreaterEqual(summary["blocked"], 1)
+
+    def test_a_broken_emitter_does_not_break_the_run(self) -> None:
+        def explode(phase, payload):
+            raise RuntimeError("observer is broken")
+
+        result = Agent(MockProvider(), audit=AuditLog(), emit=explode).run(
+            "run the test suite", guarded=True
+        )
+        self.assertTrue(result.steps)
+
+    def test_none_emitter_is_fine(self) -> None:
+        result = Agent(MockProvider(), audit=AuditLog()).run("run the test suite")
+        self.assertTrue(result.steps)
+
+
+class CliTest(unittest.TestCase):
+    def _run(self, argv):
+        import contextlib
+        import io
+
+        from ag.cli import main
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = main(argv)
+        return code, buf.getvalue()
+
+    def test_check_allows_a_clean_plan(self) -> None:
+        import json
+        import tempfile
+
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
+            json.dump([{"tool": "read_file", "args": {"path": "workspace/a"}}], fh)
+            path = fh.name
+        code, out = self._run(["check", path])
+        self.assertEqual(code, 0)
+        self.assertIn("ALLOW", out)
+
+    def test_check_fails_on_a_refusal(self) -> None:
+        import json
+        import tempfile
+
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
+            json.dump([{"tool": "run_shell", "args": {"command": "rm -rf /"}}], fh)
+            path = fh.name
+        code, out = self._run(["check", path])
+        self.assertEqual(code, 1)
+        self.assertIn("REFUSE", out)
+        self.assertIn("ASI02", out)
+
+    def test_policy_prints_valid_json(self) -> None:
+        import json
+
+        code, out = self._run(["policy"])
+        self.assertEqual(code, 0)
+        self.assertIn("tools", json.loads(out))
+
+    def test_unknown_command_prints_help(self) -> None:
+        code, out = self._run([])
+        self.assertEqual(code, 0)
+        self.assertIn("usage", out.lower())
+
+    def test_missing_plan_file_is_a_usage_error(self) -> None:
+        code, out = self._run(["check", "/nonexistent/plan.json"])
+        self.assertEqual(code, 2)
+
+
+class SamplesTest(unittest.TestCase):
+    def test_every_asi_category_has_a_sample(self) -> None:
+        from ag.server import SAMPLES
+
+        codes = {s["asi"] for s in SAMPLES if s["asi"]}
+        self.assertEqual(len(codes), 10)
+
+    def test_samples_include_harmless_prompts(self) -> None:
+        from ag.server import SAMPLES
+
+        self.assertGreaterEqual(sum(1 for s in SAMPLES if not s["asi"]), 2)
+
+    def test_sample_tasks_match_attack_tasks(self) -> None:
+        """A sample must actually trigger the attack it advertises."""
+        from ag.attacks import ATTACKS
+        from ag.server import SAMPLES
+
+        by_asi = {a.asi: a.task for a in ATTACKS}
+        for sample in SAMPLES:
+            if sample["asi"]:
+                self.assertEqual(sample["task"], by_asi[sample["asi"]])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

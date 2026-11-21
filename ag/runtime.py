@@ -20,6 +20,10 @@ Outcome = Literal["executed", "blocked", "approved", "denied", "error"]
 
 Approver = Callable[[str, dict[str, Any], Decision], bool]
 
+# Progress callback: (phase, payload). Phases are "plan", "step", "done", "error".
+# Used by the demo UI to stream a run; the runtime never requires it.
+Emitter = Callable[[str, dict[str, Any]], None]
+
 
 @dataclass
 class StepResult:
@@ -67,6 +71,20 @@ def _auto_deny(tool: str, args: dict[str, Any], decision: Decision) -> bool:
     return False
 
 
+def _summary(result: "RunResult") -> dict[str, Any]:
+    """Compact progress payload, without the full step list."""
+    return {
+        "task": result.task,
+        "mode": result.mode,
+        "landed": result.landed,
+        "blocked": result.blocked,
+        "steps": len(result.steps),
+        "injection_seen": result.injection_seen,
+        "adjudicated": result.adjudicated,
+        "adjudicator_unavailable": result.adjudicator_unavailable,
+    }
+
+
 class Agent:
     def __init__(
         self,
@@ -77,6 +95,7 @@ class Agent:
         approver: Approver | None = None,
         budget: ApprovalBudget | None = None,
         adjudicator: Adjudicator | None = None,
+        emit: Emitter | None = None,
     ) -> None:
         self.provider = provider
         self.policy = policy if policy is not None else default_policy()
@@ -84,6 +103,7 @@ class Agent:
         self.approver = approver or _auto_deny
         self.budget = budget
         self.adjudicator = adjudicator
+        self.emit = emit
 
     def plan(self, task: str) -> tuple[list[dict[str, Any]], str]:
         raw = self.provider.complete(
@@ -96,25 +116,24 @@ class Agent:
 
     def run(self, task: str, *, guarded: bool = True) -> RunResult:
         result = RunResult(task=task, mode="guarded" if guarded else "baseline")
+        self._emit("plan", {"mode": result.mode, "task": task})
         try:
             plan, raw = self.plan(task)
         except Exception as exc:  # fail closed: a broken planner executes nothing
+            message = f"{type(exc).__name__}: {exc}"
             result.steps.append(
-                StepResult(
-                    "(planner)",
-                    {},
-                    "error",
-                    "planner-error",
-                    f"{type(exc).__name__}: {exc}",
-                )
+                StepResult("(planner)", {}, "error", "planner-error", message)
             )
+            self._emit("error", {"mode": result.mode, "reason": message})
             return result
 
         result.raw_plan = raw
         tainted: set[str] = set()
+        self._emit("planned", {"mode": result.mode, "steps": len(plan), "raw": raw})
 
-        for step in plan:
+        for index, step in enumerate(plan):
             tool, args = step["tool"], step["args"]
+            self._emit("step", {"mode": result.mode, "index": index, "tool": tool, "args": args})
             if not guarded:
                 self._baseline_step(result, tool, args)
                 continue
@@ -162,7 +181,15 @@ class Agent:
 
             self._execute_step(result, tool, args, decision, tainted)
 
+        self._emit("done", {"mode": result.mode, "result": _summary(result)})
         return result
+
+    def _emit(self, phase: str, payload: dict[str, Any]) -> None:
+        if self.emit is not None:
+            try:
+                self.emit(phase, payload)
+            except Exception:  # a broken observer must not break the run
+                pass
 
     # -- step helpers -----------------------------------------------------
 

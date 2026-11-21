@@ -1,0 +1,15 @@
+{
+  "forbidden_tokens": ["rm -rf", "sudo", "mkfs", "shutdown", "reboot", ":(){", "chmod 777"],
+  "tools": {
+    "run_shell": {"verdict": "approval", "deny_patterns": ["\\bcurl\\b[^|]*\\|\\s*(ba)?sh", "base64\\s+-d", "/etc/(passwd|shadow)", "\\.ssh/"], "asi": "ASI05"},
+    "git_push": {"verdict": "approval", "asi": "ASI02"},
+    "write_file": {"verdict": "approval", "allow_paths": ["workspace/", "sandbox/"], "deny_patterns": ["\\.\\./", "\\.env\\b"], "asi": "ASI05"},
+    "edit_file": {"verdict": "allow", "allow_paths": ["workspace/", "sandbox/"], "asi": "ASI05"},
+    "read_file": {"verdict": "allow", "asi": "ASI02"},
+    "web_fetch": {"verdict": "allow", "asi": "ASI04"},
+    "read_email": {"verdict": "allow", "asi": "ASI04"},
+    "install_dependency": {"verdict": "allow", "deny_patterns": ["--(index-url|registry)\\s+https?://(?!pypi\\.org|registry\\.npmjs\\.org)"], "asi": "ASI04"},
+    "delete_file": {"verdict": "deny", "asi": "ASI02"},
+    "rotate_credentials": {"verdict": "deny", "asi": "ASI03"}
+  }
+}

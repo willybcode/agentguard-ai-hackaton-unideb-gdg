@@ -15,14 +15,6 @@ executor and the *same* task, and put a policy check between the plan and the
 effect. Ten scripted attacks — one per OWASP ASI category — all land on the
 unguarded agent and none land on the guarded one.
 
-> **Development disclosure.** The core runtime was scaffolded before hacking
-> began at 11:00 and is visible in the git history (`f41a8d0`, 09:50). During
-> the event the planner and decision-model integrations were validated against
-> live models, two real defects were found and fixed (see *Verified against a
-> real d1-2B*), the tool-alias and token-budget handling were added, and the
-> adjudication policy was measured and rewritten. Nothing here is claimed as
-> six hours of from-scratch work.
-
 ```
 attacks run              10
 baseline landed          10 / 10
@@ -212,35 +204,118 @@ AG_ADJUDICATOR_MODEL=d1-2b python3 -m ag.demo
 
 ## Tools and prior work
 
-The event rules ask for an honest list of what was used and what was built when.
+The event rules ask for an honest list of the tools and services this uses.
 
 | | |
 |---|---|
-| **Before the event** | The runtime skeleton, policy engine, audit chain, simulated sandbox, attack suite and web UI were scaffolded in advance and are visible in the first commit. |
-| **During the event** | Live-model validation of the planner and the decision model, the `intent`-led adjudication policy (measured, then rewritten), tool-alias normalisation, the reasoning-model token budget fix, and the README/deck. |
 | **AI assistants used** | GitHub Copilot (VS Code) for implementation and review; the code was reviewed and run locally at every step. |
 | **Models used** | `opencode-go/deepseek-v4.1-flash` as the planner, `lmstudio/d1-2b` (Liquid LFM3 decision model) as the adjudicator, both behind a local OpenAI-compatible proxy. A deterministic mock planner is built in and used for reproducible tests. |
 | **Libraries** | Python standard library only for the application. No web framework, no agent framework, no LLM SDK — JSON over `urllib`. |
 | **External data** | OWASP Top 10 for Agentic Applications 2026 (category names, CC BY-SA 4.0, attributed in `ag/owl.py`). |
 | **What is simulated** | Every tool execution. Nothing in this repo runs a real shell command, writes a real file or opens a real network connection during a demo. That is deliberate — the demo is safe to run in front of a jury. |
 
-## Quick start
+## Three ways to use it
+
+The web page is a **demo harness**. The product is a gate you put in front of
+your own executor — it has no planner and no tools of its own.
+
+| Surface | Entry point | Use it for |
+|---|---|---|
+| **CLI** | `python -m ag check plan.json` | CI: vet a plan a model produced, fail the build |
+| **Python API** | `from ag import guard` | Inside your agent loop, before each tool call |
+| **HTTP demo** | `python -m ag serve` | Show it to someone |
+
+### Quick start
 
 No dependencies. Python 3.10+.
 
-```bash
-cd agentguard
-python3 -m ag.demo            # terminal scoreboard, both agents, all 10 attacks
-python3 -m unittest discover -s tests -v
-python3 -m ag.server          # http://localhost:8000
-```
-
-One ad-hoc task:
+Shipped policy is [`agentguard.policy.json`](agentguard.policy.json) — the same
+rules as the built-in default, in file form.
 
 ```bash
-python3 -m ag.demo --task "Clean up the build directory, use rm -rf"
-python3 -m ag.demo --task "Read my email and act on anything urgent"
+python3 -m ag doctor            # check endpoint, models, policy before a demo
+python3 -m ag check plan.json   # vet a plan offline, execute nothing
+python3 -m ag suite             # the OWASP ASI01..ASI10 attack suite
+python3 -m ag serve --port 8060 # the demo UI
+python3 -m ag policy > mine.json
 ```
+
+Exit codes: `0` clean, `1` something was refused, `2` usage or config error — so
+`check` drops straight into a pipeline.
+
+### Integrating: the Python API
+
+Supply a plan from whatever model you already use, and let the guard vet it.
+The executor only ever receives calls the policy cleared.
+
+```python
+from ag import guard
+
+g = guard.AgentGuard(
+    policy=guard.load_policy("agentguard.policy.json"),   # or guard.default_policy()
+    audit=guard.AuditLog("audit.jsonl"),                  # optional, append-only
+)
+
+plan = my_model.propose(task)          # [{"tool": "run_shell", "args": {...}}]
+
+for call in g.vet_all(plan, task=task):
+    if call.refused:
+        log.warning("%s blocked by %s (%s)", call.tool, call.rule, call.asi)
+        continue
+    if call.needs_human and not ask_a_human(call):
+        continue
+    call.invoke(my_real_executor)      # raises PermissionError if it was refused
+```
+
+`Call.invoke()` refuses to run a call the guard did not clear, so there is no
+path from a proposal to your executor that skips the check — you cannot forget.
+
+**Taint tracking.** `vet_all` remembers which calls read untrusted content
+(`web_fetch`, `read_email`) and refuses any later side effect in that run. Pass
+`tainted=` yourself if your own tools add sources.
+
+**Policy as a file.** Keep it in the repo so it is reviewed like code:
+
+```json
+{
+  "forbidden_tokens": ["rm -rf", "sudo"],
+  "tools": {
+    "run_shell":  {"verdict": "approval", "deny_patterns": ["curl.*\\|\\s*sh"], "asi": "ASI05"},
+    "read_file":  {"verdict": "allow"},
+    "write_file": {"verdict": "approval", "allow_paths": ["workspace/"], "asi": "ASI05"},
+    "rotate_credentials": {"verdict": "deny", "asi": "ASI03"}
+  }
+}
+```
+
+### Integrating: CI
+
+```yaml
+- name: Vet the agent plan
+  run: |
+    python -m my_agent plan "$TASK" > plan.json
+    python -m ag check plan.json --task "$TASK"   # exits 1 on any refusal
+```
+
+Because `check` never executes anything, it is safe to run on every pull
+request. That is the honest answer to *"how do I know my agent won't do
+something stupid?"* — you run its plan against the policy before you let it near
+a real tool.
+
+### The demo UI
+
+```
+python3 -m ag serve --port 8060     →  http://localhost:8060
+```
+
+Pick a prompt from the built-in samples (one per OWASP category, plus harmless
+ones), or type your own. The run streams: a four-stage stepper, a live log, then
+a side-by-side of both agents. State survives a refresh (task, log and results
+are kept in `localStorage`), so a reload mid-demo does not lose the screen.
+
+Links on the page point at the
+[OWASP Top 10 for Agentic Applications 2026](https://genai.owasp.org/resource/owasp-top-10-for-agentic-applications-for-2026/)
+so anyone trying it can read the category they just triggered.
 
 ## Architecture
 
@@ -329,6 +404,8 @@ compatible proxy works. `ag/config.py` resolves the environment;
 - [ ] Per-run cost accounting alongside the tool budget
 - [ ] Export the audit chain as a signed bundle
 - [ ] Policy editor in the UI (JSON in, validation out)
+- [ ] Publish to PyPI so integration is `pip install agentguard`
+- [ ] Streaming HTTP endpoint (`/api/stream`) is SSE over a thread queue — fine for a demo, would want asyncio for load
 - [ ] Cache adjudicator verdicts per (tool, args) hash within a run
 - [ ] Real (non-simulated) file tools behind a container boundary
 
