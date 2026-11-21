@@ -210,6 +210,13 @@ End to end through the planner, `none` gave the same plan in 3.1 s where the
 default took 5.1 s. The field is only sent when configured, so models that
 reject it are unaffected — send `off` to omit it entirely.
 
+One consequence worth knowing: with reasoning suppressed the model sometimes
+emits the plan and then keeps talking. Plan extraction scans for a *balanced*
+JSON value rather than slicing to the last bracket in the response, and repairs
+trailing commas and single quotes, so trailing prose cannot corrupt a valid
+plan. If a reply cannot be recovered at all it is reported as `parse-error`,
+distinct from `planner-error` (endpoint unreachable) — the fixes are different.
+
 Testing without a real model:
 
 ```bash

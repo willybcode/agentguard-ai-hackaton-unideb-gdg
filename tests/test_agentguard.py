@@ -1086,5 +1086,100 @@ class DemoPortTest(unittest.TestCase):
                 os.environ["AG_DEMO_PORT"] = saved
 
 
+class PlanParsingRobustnessTest(unittest.TestCase):
+    """Regression: a reasoning model emits the plan and then keeps talking.
+
+    The old extractor sliced from the first bracket to the *last* bracket in the
+    whole response, so trailing prose containing a bracket broke a valid plan
+    with "Expecting ',' delimiter". That is the failure seen live in the UI.
+    """
+
+    def test_trailing_prose_with_a_bracket_does_not_break_the_plan(self) -> None:
+        from ag.llm import parse_plan
+
+        raw = (
+            '[{"tool": "run_shell", "args": {"command": "ls [1-9]"}}]\n\n'
+            "Note: this only lists the first nine entries."
+        )
+        self.assertEqual(parse_plan(raw)[0]["args"]["command"], "ls [1-9]")
+
+    def test_prose_between_brackets_is_ignored(self) -> None:
+        from ag.llm import parse_plan
+
+        raw = (
+            'I will not run that. A safer option:\n'
+            '[{"tool": "read_file", "args": {"path": "a"}}]\n'
+            "That is all [for now]."
+        )
+        steps = parse_plan(raw)
+        self.assertEqual(len(steps), 1)
+        self.assertEqual(steps[0]["tool"], "read_file")
+
+    def test_trailing_comma_is_repaired(self) -> None:
+        from ag.llm import parse_plan
+
+        steps = parse_plan('[{"tool": "read_file", "args": {"path": "a"},}]')
+        self.assertEqual(steps[0]["args"], {"path": "a"})
+
+    def test_single_quotes_are_repaired(self) -> None:
+        from ag.llm import parse_plan
+
+        steps = parse_plan("[{'tool': 'read_file', 'args': {'path': 'a'}}]")
+        self.assertEqual(steps[0]["args"], {"path": "a"})
+
+    def test_single_object_is_accepted(self) -> None:
+        from ag.llm import parse_plan
+
+        steps = parse_plan('{"tool": "read_file", "args": {"path": "a"}}')
+        self.assertEqual(len(steps), 1)
+
+    def test_nested_object_is_not_mistaken_for_the_plan(self) -> None:
+        """Scanning for the first '{' would return {"path": "a"}."""
+        from ag.llm import parse_plan
+
+        steps = parse_plan('{"args": {"path": "a"}, "tool": "read_file"}')
+        self.assertEqual(steps[0]["tool"], "read_file")
+
+    def test_fenced_output(self) -> None:
+        from ag.llm import parse_plan
+
+        steps = parse_plan('```json\n[{"tool": "read_file", "args": {"path": "a"}}]\n```')
+        self.assertEqual(len(steps), 1)
+
+    def test_no_json_raises_with_a_snippet(self) -> None:
+        from ag.llm import parse_plan
+
+        with self.assertRaises(ValueError) as ctx:
+            parse_plan("I cannot help with that request.")
+        self.assertIn("no parsable JSON", str(ctx.exception))
+
+    def test_json_with_no_tool_calls_raises(self) -> None:
+        from ag.llm import parse_plan
+
+        with self.assertRaises(ValueError):
+            parse_plan('[{"note": "nothing to do"}]')
+
+    def test_alternate_argument_keys(self) -> None:
+        from ag.llm import parse_plan
+
+        for key in ("arguments", "parameters"):
+            with self.subTest(key=key):
+                steps = parse_plan('[{"name": "read_file", "%s": {"path": "a"}}]' % key)
+                self.assertEqual(steps[0]["args"], {"path": "a"})
+
+    def test_parse_error_is_not_reported_as_an_unreachable_planner(self) -> None:
+        from ag.runtime import Agent
+
+        class Garbage:
+            name = "garbage"
+
+            def complete(self, messages):
+                return "I would rather not."
+
+        result = Agent(Garbage(), audit=AuditLog()).run("anything")
+        self.assertEqual(result.steps[0].rule, "parse-error")
+        self.assertEqual(result.landed, 0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

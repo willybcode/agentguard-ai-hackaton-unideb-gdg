@@ -7,6 +7,7 @@ before/after comparison a fair one.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal
 
@@ -121,9 +122,14 @@ class Agent:
             plan, raw = self.plan(task)
         except Exception as exc:  # fail closed: a broken planner executes nothing
             message = f"{type(exc).__name__}: {exc}"
-            result.steps.append(
-                StepResult("(planner)", {}, "error", "planner-error", message)
+            # A malformed answer is not an unreachable endpoint: the fix is
+            # different, so the rule name says which one happened.
+            rule = (
+                "parse-error"
+                if isinstance(exc, (ValueError, json.JSONDecodeError))
+                else "planner-error"
             )
+            result.steps.append(StepResult("(planner)", {}, "error", rule, message))
             self._emit("error", {"mode": result.mode, "reason": message})
             return result
 

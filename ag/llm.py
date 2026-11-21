@@ -360,32 +360,86 @@ def canonical_tool(name: str) -> str:
     return ALIASES.get(key, name)
 
 
+def _extract_json(text: str) -> Any:
+    """Find the first complete JSON value in a blob of model output.
+
+    The previous approach sliced from the first bracket to the *last* bracket,
+    so any trailing prose containing a bracket corrupted the payload::
+
+        [{"tool": "run_shell", "args": {"command": "ls [1-9]"}}]
+        Note: this uses a [glob] pattern.        <-- the rfind grabbed this ]
+
+    A reasoning model with its effort turned down does exactly this — it emits
+    the plan and then keeps talking. So scan for a *balanced* value instead,
+    starting at each candidate opening bracket, and take the first that parses.
+    """
+    decoder = json.JSONDecoder()
+
+    # A plan is an array or an object that wraps one. Starting the scan at the
+    # first "{" would happily return a nested argument object, so try array
+    # starts first and only then fall back to objects.
+    for opening in ("[", "{"):
+        for start, ch in enumerate(text):
+            if ch != opening:
+                continue
+            try:
+                value, _ = decoder.raw_decode(text, start)
+            except json.JSONDecodeError:
+                continue
+            if opening == "[" and isinstance(value, list):
+                return value
+            if opening == "{" and isinstance(value, dict):
+                if value.keys() & {"steps", "plan", "tool", "name", "function"}:
+                    return value
+    raise ValueError("model returned no JSON")
+
+
+def repair_json(text: str) -> str:
+    """Best-effort repair of the two mistakes models actually make.
+
+    - trailing commas before ``]`` or ``}``
+    - single quotes where JSON needs double quotes
+    """
+    text = re.sub(r",\s*([}\]])", r"\1", text)
+    # A quoted run followed by ':' is a key; elsewhere it is a value. This also
+    # catches keys that begin a document, which a lookbehind on [{, misses.
+    text = re.sub(r"'([^'\\]*)'(\s*:)", r'"\1"\2', text)
+    text = re.sub(r":\s*'([^'\\]*)'", r': "\1"', text)
+    return text
+
+
 def parse_plan(text: str) -> list[dict[str, Any]]:
-    """Extract a plan from model output, tolerating fences and preamble."""
-    text = text.strip()
-    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.MULTILINE)
+    """Extract a plan from model output, tolerating fences, prose and near-JSON.
 
-    start = min(
-        (i for i in (text.find("["), text.find("{")) if i != -1),
-        default=-1,
-    )
-    if start == -1:
-        raise ValueError("model returned no JSON")
-    end = max(text.rfind("]"), text.rfind("}"))
-    candidate = text[start : end + 1]
+    Raises ``ValueError`` when nothing usable can be recovered, and the caller
+    reports that as a planner error rather than executing a guessed plan.
+    """
+    cleaned = text.strip()
+    cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", cleaned, flags=re.MULTILINE)
 
-    parsed = json.loads(candidate)
+    parsed: Any = None
+    for attempt in (cleaned, repair_json(cleaned)):
+        try:
+            parsed = _extract_json(attempt)
+            break
+        except ValueError:
+            continue
+
+    if parsed is None:
+        snippet = cleaned[:160].replace("\n", " ")
+        raise ValueError(f"model returned no parsable JSON (starts: {snippet!r})")
+
     if isinstance(parsed, dict):
-        parsed = parsed.get("steps") or [parsed]
+        parsed = parsed.get("steps") or parsed.get("plan") or [parsed]
     if not isinstance(parsed, list):
-        raise ValueError("plan is not a list")
+        raise ValueError(f"plan is not a list (got {type(parsed).__name__})")
 
     steps: list[dict[str, Any]] = []
     for item in parsed:
         if not isinstance(item, dict):
             continue
-        tool = item.get("tool") or item.get("name")
-        args = item.get("args") or item.get("arguments") or {}
+        tool = item.get("tool") or item.get("name") or item.get("function")
+        args = item.get("args") or item.get("arguments") or item.get("parameters") or {}
         if isinstance(args, str):
             try:
                 args = json.loads(args)
@@ -397,6 +451,9 @@ def parse_plan(text: str) -> list[dict[str, Any]]:
             if canonical != tool:
                 step["_orig_tool"] = tool
             steps.append(step)
+
+    if not steps:
+        raise ValueError("model returned JSON but no usable tool calls")
     return steps
 
 
